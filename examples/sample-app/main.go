@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -39,13 +39,28 @@ func newServer(addr string, h http.Handler) *http.Server {
 	}
 }
 
+// healthResponse is the JSON body returned by /healthz.
+type healthResponse struct {
+	Status  string `json:"status"`
+	Version string `json:"version"`
+}
+
 func healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})
+	_ = json.NewEncoder(w).Encode(healthResponse{Status: "ok", Version: version})
+}
+
+// newLogger emits structured JSON logs to stdout, which suits container log collectors.
+func newLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stdout, nil))
 }
 
 func main() {
+	logger := newLogger()
 	srv := newServer(listenAddr(), newMux())
-	log.Printf("sample-app %s listening on %s", version, srv.Addr)
-	log.Fatal(srv.ListenAndServe())
+	logger.Info("starting sample-app", "version", version, "addr", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("server stopped", "err", err)
+		os.Exit(1)
+	}
 }
