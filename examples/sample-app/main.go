@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -59,8 +62,29 @@ func main() {
 	logger := newLogger()
 	srv := newServer(listenAddr(), newMux())
 	logger.Info("starting sample-app", "version", version, "addr", srv.Addr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("server stopped", "err", err)
-		os.Exit(1)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			logger.Error("server stopped", "err", err)
+			os.Exit(1)
+		}
+	case sig := <-sigCh:
+		logger.Info("shutdown signal received", "signal", sig.String())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			logger.Error("graceful shutdown failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("server stopped")
 	}
 }
