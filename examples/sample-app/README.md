@@ -2,7 +2,8 @@
 
 Minimal Go HTTP service used to exercise the pipelines in this repo.
 
-- `GET /healthz` returns `{"status":"ok","version":"..."}`
+- `GET /healthz` returns `{"status":"ok","version":"..."}` (liveness)
+- `GET /readyz` returns `{"status":"ready","version":"..."}` (readiness)
 - Listens on `:8080` (override with `PORT`)
 - Multi-stage build into a distroless, non-root image
 - Structured JSON logs to stdout (suitable for container log collectors)
@@ -11,6 +12,7 @@ Minimal Go HTTP service used to exercise the pipelines in this repo.
 docker build --build-arg VERSION=0.1.0 -t sample-app:local .
 docker run --rm -p 8080:8080 sample-app:local
 curl -s localhost:8080/healthz
+curl -s localhost:8080/readyz
 ```
 
 ## Graceful shutdown

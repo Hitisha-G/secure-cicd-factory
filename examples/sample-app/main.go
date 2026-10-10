@@ -27,6 +27,7 @@ func listenAddr() string {
 func newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
+	mux.HandleFunc("/readyz", readyz)
 	return mux
 }
 
@@ -42,15 +43,26 @@ func newServer(addr string, h http.Handler) *http.Server {
 	}
 }
 
-// healthResponse is the JSON body returned by /healthz.
-type healthResponse struct {
+// probeResponse is the JSON body returned by liveness and readiness probes.
+type probeResponse struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
 }
 
-func healthz(w http.ResponseWriter, _ *http.Request) {
+func writeProbe(w http.ResponseWriter, status string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(healthResponse{Status: "ok", Version: version})
+	_ = json.NewEncoder(w).Encode(probeResponse{Status: status, Version: version})
+}
+
+// healthz is the liveness probe: process is up and serving.
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	writeProbe(w, "ok")
+}
+
+// readyz is the readiness probe: process can accept traffic.
+// Today that matches liveness; extend here when dependencies are added.
+func readyz(w http.ResponseWriter, _ *http.Request) {
+	writeProbe(w, "ready")
 }
 
 // newLogger emits structured JSON logs to stdout, which suits container log collectors.
