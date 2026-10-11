@@ -35,7 +35,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: examples/sample-app/go.mod
-          cache: false
+          cache: true
+          cache-dependency-path: examples/sample-app/go.sum
 
       - name: gofmt
         run: |
