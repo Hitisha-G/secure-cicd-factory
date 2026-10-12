@@ -34,9 +34,34 @@ docs/                       # pipeline design notes and threat model
 5. Generate SBOM and sign the image
 6. Push to registry using OIDC-issued credentials
 
+## Quick start
+
+Everything runs from the repo root; the root `Makefile` delegates to `examples/sample-app`.
+
+```bash
+make help        # list every target
+make ci-local    # gofmt check, go vet, go test -race (same gates as CI)
+make build       # static binary in examples/sample-app/bin/
+make image       # distroless, non-root container image
+make run         # build and run the service on :8080
+```
+
+Requires Go (version pinned in `examples/sample-app/go.mod`) and Docker for `make image`.
+
 ## Status
 
 Early work in progress; stages land incrementally with tests and docs.
+
+| Stage | State |
+| --- | --- |
+| Lint and unit test | Done: [`sample-app-ci.yml`](.github/workflows/sample-app-ci.yml) runs gofmt, go vet, and `go test -race` |
+| Build container image | Done: multi-stage distroless build (no push) after tests pass |
+| Secret scan and dependency audit | Planned |
+| Image vulnerability scan with severity gate | Planned |
+| SBOM and image signing | Planned |
+| Push to registry via OIDC | Planned |
+
+CI hardening already in place: read-only `contents` permission, `persist-credentials: false` on checkout, pinned `ubuntu-24.04` runners, job timeouts, per-ref concurrency cancellation, and Go module caching.
 
 ## License
 
