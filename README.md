@@ -56,7 +56,7 @@ Early work in progress; stages land incrementally with tests and docs.
 | --- | --- |
 | Lint and unit test | Done: [`sample-app-ci.yml`](.github/workflows/sample-app-ci.yml) runs gofmt, go vet, and `go test -race` |
 | Build container image | Done: multi-stage distroless build (no push) after tests pass |
-| Secret scan and dependency audit | Planned |
+| Secret scan and dependency audit | Done: gitleaks on every run; `govulncheck` after tests |
 | Image vulnerability scan with severity gate | Planned |
 | SBOM and image signing | Planned |
 | Push to registry via OIDC | Planned |

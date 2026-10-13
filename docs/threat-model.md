@@ -30,9 +30,9 @@ Out of scope for now: runtime security of the cluster that runs the image, and d
 | T2 | Checkout leaves a usable token on disk for later steps | `persist-credentials: false` on every checkout | In place |
 | T3 | Runner image drifts and silently changes the toolchain | Pinned `ubuntu-24.04` runners; Go version read from `go.mod` | In place |
 | T4 | Hung or abused job burns minutes or hides activity | Per-job `timeout-minutes` and per-ref concurrency cancellation | In place |
-| T5 | Vulnerable or malicious dependency or base image | Dependabot for actions, Go modules, and Docker base images | In place (updates); audit gate planned |
+| T5 | Vulnerable or malicious dependency or base image | Dependabot for actions, Go modules, and Docker base images; `govulncheck` gate in sample-app CI | In place (updates + audit gate); image CVE gate still planned |
 | T6 | Container runs with a shell or as root, widening blast radius | Multi-stage build onto distroless `static-debian12:nonroot` | In place |
-| T7 | Secrets committed to the repo | Secret scanning on every push and pull request | Planned |
+| T7 | Secrets committed to the repo | gitleaks in sample-app CI on every push and pull request | In place |
 | T8 | Image ships with known critical CVEs | Image scan with a severity gate that fails the build | Planned |
 | T9 | Deploy target cannot prove what it is running | SBOM generation and keyless image signing | Planned |
 | T10 | Long-lived cloud keys stored as CI secrets get leaked | OIDC-issued, short-lived credentials scoped per repo and branch | Planned |
@@ -45,7 +45,7 @@ Fork pull requests run with a read-only token and no repository secrets. Workflo
 ## Residual risks
 
 - Until T11 lands, actions are pinned to major-version tags, which the action owner can move.
-- Until T7 and T8 land, a leaked secret or vulnerable image is caught only by review.
+- Until T8 lands, a vulnerable image is caught only by review (secrets are scanned by gitleaks).
 - The build is not yet reproducible or attested, so provenance relies on the CI log rather than a signed statement.
 
 ## Review
