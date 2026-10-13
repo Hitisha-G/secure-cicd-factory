@@ -63,6 +63,8 @@ Early work in progress; stages land incrementally with tests and docs.
 
 CI hardening already in place: read-only `contents` permission, `persist-credentials: false` on checkout, pinned `ubuntu-24.04` runners, job timeouts, per-ref concurrency cancellation, and Go module caching.
 
+The risks each stage is meant to close, and which controls are already live, are tracked in the [pipeline threat model](docs/threat-model.md).
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
