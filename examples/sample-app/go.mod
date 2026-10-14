@@ -1,3 +1,3 @@
 module github.com/Hitisha-G/secure-cicd-factory/examples/sample-app
 
-go 1.22
+go 1.24.8
