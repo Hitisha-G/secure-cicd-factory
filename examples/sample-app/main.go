@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -25,11 +26,18 @@ func listenAddr() string {
 	return ":" + defaultPort
 }
 
+// appState holds process-wide lifecycle flags shared by handlers and run.
+type appState struct {
+	// draining flips to true once shutdown starts so readiness fails and
+	// load balancers stop routing new traffic before the listener closes.
+	draining atomic.Bool
+}
+
 // newMux wires the HTTP routes so they can be exercised without a live server.
-func newMux() *http.ServeMux {
+func newMux(st *appState) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
-	mux.HandleFunc("/readyz", readyz)
+	mux.HandleFunc("/readyz", readyz(st))
 	return mux
 }
 
@@ -51,20 +59,28 @@ type probeResponse struct {
 	Version string `json:"version"`
 }
 
-func writeProbe(w http.ResponseWriter, status string) {
+func writeProbe(w http.ResponseWriter, code int, status string) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(probeResponse{Status: status, Version: version})
 }
 
 // healthz is the liveness probe: process is up and serving.
 func healthz(w http.ResponseWriter, _ *http.Request) {
-	writeProbe(w, "ok")
+	writeProbe(w, http.StatusOK, "ok")
 }
 
-// readyz is the readiness probe: process can accept traffic.
-// Today that matches liveness; extend here when dependencies are added.
-func readyz(w http.ResponseWriter, _ *http.Request) {
-	writeProbe(w, "ready")
+// readyz is the readiness probe: process can accept traffic. It returns 503
+// with status "draining" once shutdown has begun, while liveness stays green
+// so the orchestrator does not restart a pod that is exiting cleanly.
+func readyz(st *appState) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if st.draining.Load() {
+			writeProbe(w, http.StatusServiceUnavailable, "draining")
+			return
+		}
+		writeProbe(w, http.StatusOK, "ready")
+	}
 }
 
 // newLogger emits structured JSON logs to stdout, which suits container log collectors.
@@ -77,7 +93,7 @@ const shutdownTimeout = 10 * time.Second
 
 // run serves until ctx is cancelled or the listener fails, then drains
 // in-flight requests. Keeping this out of main makes shutdown testable.
-func run(ctx context.Context, logger *slog.Logger, srv *http.Server) error {
+func run(ctx context.Context, logger *slog.Logger, srv *http.Server, st *appState) error {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.ListenAndServe()
@@ -93,6 +109,8 @@ func run(ctx context.Context, logger *slog.Logger, srv *http.Server) error {
 		logger.Info("shutdown signal received")
 	}
 
+	st.draining.Store(true)
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -104,13 +122,14 @@ func run(ctx context.Context, logger *slog.Logger, srv *http.Server) error {
 
 func main() {
 	logger := newLogger()
-	srv := newServer(listenAddr(), newMux())
+	st := &appState{}
+	srv := newServer(listenAddr(), newMux(st))
 	logger.Info("starting sample-app", "version", version, "addr", srv.Addr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, logger, srv); err != nil {
+	if err := run(ctx, logger, srv, st); err != nil {
 		logger.Error("server stopped", "err", err)
 		stop()
 		os.Exit(1)

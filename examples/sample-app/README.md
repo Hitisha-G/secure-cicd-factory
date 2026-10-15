@@ -3,7 +3,8 @@
 Minimal Go HTTP service used to exercise the pipelines in this repo.
 
 - `GET /healthz` returns `{"status":"ok","version":"..."}` (liveness)
-- `GET /readyz` returns `{"status":"ready","version":"..."}` (readiness)
+- `GET /readyz` returns `{"status":"ready","version":"..."}` (readiness), or
+  `503 {"status":"draining",...}` once shutdown has started
 - Listens on `:8080` (override with `PORT`)
 - Multi-stage build into a distroless, non-root image
 - Structured JSON logs to stdout (suitable for container log collectors)
@@ -21,6 +22,11 @@ The process traps `SIGINT` and `SIGTERM`, then calls `http.Server.Shutdown` with
 10-second drain so in-flight requests can finish before the process exits. That
 matches how orchestrators (Kubernetes, ECS, Docker Compose) stop containers:
 they send `SIGTERM`, wait for the grace period, then force-kill.
+
+As soon as the signal arrives, `/readyz` flips to `503 draining` while
+`/healthz` stays `200`. Load balancers and Kubernetes readiness checks stop
+sending new traffic, but the liveness probe does not restart a pod that is
+already exiting cleanly.
 
 ```bash
 make run          # Ctrl-C triggers the same path as SIGTERM in a container

@@ -31,7 +31,7 @@ func TestListenAddrFromEnv(t *testing.T) {
 func TestHealthz(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
-	newMux().ServeHTTP(rr, req)
+	newMux(&appState{}).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
@@ -55,7 +55,7 @@ func TestHealthz(t *testing.T) {
 func TestReadyz(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
-	newMux().ServeHTTP(rr, req)
+	newMux(&appState{}).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
@@ -72,11 +72,12 @@ func TestReadyz(t *testing.T) {
 
 func TestRunStopsOnContextCancel(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	srv := newServer("127.0.0.1:0", newMux())
+	st := &appState{}
+	srv := newServer("127.0.0.1:0", newMux(st))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, logger, srv) }()
+	go func() { done <- run(ctx, logger, srv, st) }()
 
 	cancel()
 	select {
@@ -87,13 +88,42 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("run() did not return after context cancel")
 	}
+	if !st.draining.Load() {
+		t.Fatal("draining should be set after shutdown")
+	}
+}
+
+func TestReadyzDraining(t *testing.T) {
+	st := &appState{}
+	st.draining.Store(true)
+	mux := newMux(st)
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz status = %d, want 503", rr.Code)
+	}
+	var body probeResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "draining" {
+		t.Fatalf("status = %q, want draining", body.Status)
+	}
+
+	// Liveness must stay green while draining so the pod is not restarted.
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200 while draining", rr.Code)
+	}
 }
 
 func TestRunReturnsListenError(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	srv := newServer("127.0.0.1:-1", newMux())
+	srv := newServer("127.0.0.1:-1", newMux(&appState{}))
 
-	if err := run(context.Background(), logger, srv); err == nil {
+	if err := run(context.Background(), logger, srv, &appState{}); err == nil {
 		t.Fatal("run() = nil, want listen error")
 	}
 }
