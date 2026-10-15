@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestListenAddrDefault(t *testing.T) {
@@ -63,5 +67,33 @@ func TestReadyz(t *testing.T) {
 	}
 	if body.Status != "ready" {
 		t.Fatalf("status = %q, want ready", body.Status)
+	}
+}
+
+func TestRunStopsOnContextCancel(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := newServer("127.0.0.1:0", newMux())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, logger, srv) }()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() did not return after context cancel")
+	}
+}
+
+func TestRunReturnsListenError(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := newServer("127.0.0.1:-1", newMux())
+
+	if err := run(context.Background(), logger, srv); err == nil {
+		t.Fatal("run() = nil, want listen error")
 	}
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -70,33 +72,47 @@ func newLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, nil))
 }
 
-func main() {
-	logger := newLogger()
-	srv := newServer(listenAddr(), newMux())
-	logger.Info("starting sample-app", "version", version, "addr", srv.Addr)
+// shutdownTimeout bounds how long in-flight requests get to drain on shutdown.
+const shutdownTimeout = 10 * time.Second
 
+// run serves until ctx is cancelled or the listener fails, then drains
+// in-flight requests. Keeping this out of main makes shutdown testable.
+func run(ctx context.Context, logger *slog.Logger, srv *http.Server) error {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.ListenAndServe()
 	}()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	select {
 	case err := <-errCh:
-		if err != nil && err != http.ErrServerClosed {
-			logger.Error("server stopped", "err", err)
-			os.Exit(1)
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
 		}
-	case sig := <-sigCh:
-		logger.Info("shutdown signal received", "signal", sig.String())
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			logger.Error("graceful shutdown failed", "err", err)
-			os.Exit(1)
-		}
-		logger.Info("server stopped")
+		return err
+	case <-ctx.Done():
+		logger.Info("shutdown signal received")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	logger.Info("server stopped")
+	return nil
+}
+
+func main() {
+	logger := newLogger()
+	srv := newServer(listenAddr(), newMux())
+	logger.Info("starting sample-app", "version", version, "addr", srv.Addr)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, logger, srv); err != nil {
+		logger.Error("server stopped", "err", err)
+		stop()
+		os.Exit(1)
 	}
 }
