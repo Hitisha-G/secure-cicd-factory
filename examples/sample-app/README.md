@@ -24,9 +24,10 @@ matches how orchestrators (Kubernetes, ECS, Docker Compose) stop containers:
 they send `SIGTERM`, wait for the grace period, then force-kill.
 
 As soon as the signal arrives, `/readyz` flips to `503 draining` while
-`/healthz` stays `200`. Load balancers and Kubernetes readiness checks stop
-sending new traffic, but the liveness probe does not restart a pod that is
-already exiting cleanly.
+`/healthz` stays `200`. The process then waits briefly (2s by default) so load
+balancers and Kubernetes readiness checks can observe the failure and stop
+sending new traffic before `Shutdown` closes the listener. The liveness probe
+does not restart a pod that is already exiting cleanly.
 
 ```bash
 make run          # Ctrl-C triggers the same path as SIGTERM in a container

@@ -71,6 +71,10 @@ func TestReadyz(t *testing.T) {
 }
 
 func TestRunStopsOnContextCancel(t *testing.T) {
+	old := drainDelay
+	drainDelay = 0
+	defer func() { drainDelay = old }()
+
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	st := &appState{}
 	srv := newServer("127.0.0.1:0", newMux(st))
@@ -125,5 +129,41 @@ func TestRunReturnsListenError(t *testing.T) {
 
 	if err := run(context.Background(), logger, srv, &appState{}); err == nil {
 		t.Fatal("run() = nil, want listen error")
+	}
+}
+
+func TestRunWaitsDrainDelayBeforeShutdown(t *testing.T) {
+	old := drainDelay
+	drainDelay = 150 * time.Millisecond
+	defer func() { drainDelay = old }()
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	st := &appState{}
+	srv := newServer("127.0.0.1:0", newMux(st))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, logger, srv, st) }()
+
+	// Let ListenAndServe bind before we cancel.
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() did not return after context cancel")
+	}
+
+	elapsed := time.Since(start)
+	if elapsed < drainDelay {
+		t.Fatalf("shutdown finished in %v, want at least drainDelay %v", elapsed, drainDelay)
+	}
+	if !st.draining.Load() {
+		t.Fatal("draining should be set after shutdown")
 	}
 }

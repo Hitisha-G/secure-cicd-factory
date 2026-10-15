@@ -91,8 +91,14 @@ func newLogger() *slog.Logger {
 // shutdownTimeout bounds how long in-flight requests get to drain on shutdown.
 const shutdownTimeout = 10 * time.Second
 
-// run serves until ctx is cancelled or the listener fails, then drains
-// in-flight requests. Keeping this out of main makes shutdown testable.
+// drainDelay is how long readiness stays "draining" before Shutdown so load
+// balancers and kubelet can observe the 503 and stop sending new traffic.
+// Tests may set this to zero to avoid waiting.
+var drainDelay = 2 * time.Second
+
+// run serves until ctx is cancelled or the listener fails, then marks the
+// process draining, waits for load balancers to notice, and drains in-flight
+// requests. Keeping this out of main makes shutdown testable.
 func run(ctx context.Context, logger *slog.Logger, srv *http.Server, st *appState) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -110,6 +116,10 @@ func run(ctx context.Context, logger *slog.Logger, srv *http.Server, st *appStat
 	}
 
 	st.draining.Store(true)
+	if drainDelay > 0 {
+		logger.Info("waiting for load balancers to observe not-ready", "drain_delay", drainDelay.String())
+		time.Sleep(drainDelay)
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
