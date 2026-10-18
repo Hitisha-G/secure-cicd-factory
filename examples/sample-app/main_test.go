@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -165,5 +166,150 @@ func TestRunWaitsDrainDelayBeforeShutdown(t *testing.T) {
 	}
 	if !st.draining.Load() {
 		t.Fatal("draining should be set after shutdown")
+	}
+}
+
+// freeAddr reserves a loopback port, releases it, and returns the address so
+// run can bind it via ListenAndServe while the test still knows where to dial.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release port: %v", err)
+	}
+	return addr
+}
+
+// noKeepAliveClient opens a fresh connection per request so no idle
+// keep-alive connection lingers and stretches out graceful shutdown.
+func noKeepAliveClient() *http.Client {
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+}
+
+// waitForServer polls /healthz until the listener accepts connections.
+func waitForServer(t *testing.T, client *http.Client, base string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(base + "/healthz")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("server did not start listening in time")
+}
+
+func TestRunDrainsInFlightRequests(t *testing.T) {
+	old := drainDelay
+	drainDelay = 0
+	defer func() { drainDelay = old }()
+
+	const slowFor = 200 * time.Millisecond
+	started := make(chan struct{})
+	st := &appState{}
+	mux := newMux(st)
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		time.Sleep(slowFor)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "done")
+	})
+
+	addr := freeAddr(t)
+	base := "http://" + addr
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := newServer(addr, mux)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- run(ctx, logger, srv, st) }()
+	client := noKeepAliveClient()
+	waitForServer(t, client, base)
+
+	type result struct {
+		code int
+		body string
+		err  error
+	}
+	reqDone := make(chan result, 1)
+	go func() {
+		resp, err := client.Get(base + "/slow")
+		if err != nil {
+			reqDone <- result{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		reqDone <- result{code: resp.StatusCode, body: string(b), err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("slow handler never started")
+	}
+	cancel()
+
+	var res result
+	select {
+	case res = <-reqDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight request did not complete")
+	}
+	if res.err != nil {
+		t.Fatalf("in-flight request failed during shutdown: %v", res.err)
+	}
+	if res.code != http.StatusOK || res.body != "done" {
+		t.Fatalf("in-flight response = %d %q, want 200 \"done\"", res.code, res.body)
+	}
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run() = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() did not return after draining")
+	}
+
+	// The listener is closed once run returns, so new connections must fail.
+	if resp, err := client.Get(base + "/healthz"); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected new connections to be refused after shutdown")
+	}
+}
+
+func TestNewServerTimeouts(t *testing.T) {
+	srv := newServer(":0", http.NewServeMux())
+	checks := []struct {
+		name string
+		got  time.Duration
+	}{
+		{"ReadHeaderTimeout", srv.ReadHeaderTimeout},
+		{"ReadTimeout", srv.ReadTimeout},
+		{"WriteTimeout", srv.WriteTimeout},
+		{"IdleTimeout", srv.IdleTimeout},
+	}
+	for _, c := range checks {
+		if c.got <= 0 {
+			t.Errorf("%s = %v, want a positive timeout to guard against slow clients", c.name, c.got)
+		}
+	}
+	if srv.ReadHeaderTimeout > srv.ReadTimeout {
+		t.Errorf("ReadHeaderTimeout %v should not exceed ReadTimeout %v", srv.ReadHeaderTimeout, srv.ReadTimeout)
+	}
+	if srv.WriteTimeout > shutdownTimeout {
+		t.Errorf("WriteTimeout %v exceeds shutdownTimeout %v; in-flight requests could outlive the drain window", srv.WriteTimeout, shutdownTimeout)
 	}
 }
