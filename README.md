@@ -65,6 +65,8 @@ CI hardening already in place: read-only `contents` permission, `persist-credent
 
 The risks each stage is meant to close, and which controls are already live, are tracked in the [pipeline threat model](docs/threat-model.md).
 
+When a run goes red, [CI troubleshooting](docs/ci-troubleshooting.md) maps each gate to a local command and its usual fix.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
