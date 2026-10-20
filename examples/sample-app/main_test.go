@@ -313,3 +313,57 @@ func TestNewServerTimeouts(t *testing.T) {
 		t.Errorf("WriteTimeout %v exceeds shutdownTimeout %v; in-flight requests could outlive the drain window", srv.WriteTimeout, shutdownTimeout)
 	}
 }
+
+func TestProbesReportBuildVersion(t *testing.T) {
+	old := version
+	version = "1.2.3-test"
+	defer func() { version = old }()
+
+	draining := &appState{}
+	draining.draining.Store(true)
+
+	cases := []struct {
+		name   string
+		st     *appState
+		path   string
+		code   int
+		status string
+	}{
+		{"healthz", &appState{}, "/healthz", http.StatusOK, "ok"},
+		{"readyz", &appState{}, "/readyz", http.StatusOK, "ready"},
+		{"readyz draining", draining, "/readyz", http.StatusServiceUnavailable, "draining"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			newMux(tc.st).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, tc.path, nil))
+
+			if rr.Code != tc.code {
+				t.Fatalf("status code = %d, want %d", rr.Code, tc.code)
+			}
+			if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", ct)
+			}
+			var body probeResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Status != tc.status {
+				t.Fatalf("status = %q, want %q", body.Status, tc.status)
+			}
+			if body.Version != "1.2.3-test" {
+				t.Fatalf("version = %q, want the -ldflags injected value", body.Version)
+			}
+		})
+	}
+}
+
+func TestUnknownRouteNotFound(t *testing.T) {
+	for _, path := range []string{"/", "/metrics", "/healthz/extra"} {
+		rr := httptest.NewRecorder()
+		newMux(&appState{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d, want 404", path, rr.Code)
+		}
+	}
+}
